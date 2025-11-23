@@ -10,7 +10,13 @@ const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
+// In-memory session store; restart-safe persistence is out of scope for this lightweight service.
 const SESSIONS = new Map(); // pin -> session
+
+// Scoring constants
+const BASE_SCORE = 1000;
+const TIME_BONUS_MAX = 500; // max bonus for answering immediately
+const STREAK_STEP = 100; // each consecutive correct adds this much bonus; missed answer removes it
 
 function genPin() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -39,7 +45,8 @@ function addPlayer(session, socket, name) {
     socketId: socket.id,
     name: name.slice(0, 40),
     score: 0,
-    lastAnswer: null
+    lastAnswer: null,
+    streak: 0
   };
   session.players.set(socket.id, player);
   return player;
@@ -57,15 +64,27 @@ function scoreAnswer(session, player, payload) {
   if (!session.deadline || now > session.deadline) return { ok: false, reason: "too-late" };
 
   const isCorrect = payload.answer === q.answer;
-  let gained = 0;
+  const remainingMs = Math.max(0, session.deadline - now);
+  const timeBonus = Math.floor((remainingMs / q.durationMs) * TIME_BONUS_MAX);
+
+  // Streak bonus/penalty: consecutive correct answers build up, miss removes streak value
+  let streakBonus = 0;
+  let penalty = 0;
   if (isCorrect) {
-    const remainingMs = Math.max(0, session.deadline - now);
-    const bonus = Math.floor((remainingMs / q.durationMs) * 500);
-    gained = 1000 + bonus;
+    player.streak = (player.streak || 0) + 1;
+    streakBonus = player.streak * STREAK_STEP;
+    const gained = BASE_SCORE + timeBonus + streakBonus;
     player.score += gained;
+    player.lastAnswer = { qid: q.id, correct: true, gained, timeBonus, streakBonus, penalty: 0 };
+    return { ok: true, isCorrect, gained, correct: q.answer, streak: player.streak };
   }
-  player.lastAnswer = { qid: q.id, correct: isCorrect, gained };
-  return { ok: true, isCorrect, gained, correct: q.answer };
+
+  // Incorrect: remove accumulated streak bonus (symmetry)
+  penalty = (player.streak || 0) * STREAK_STEP;
+  player.score = Math.max(0, player.score - penalty);
+  player.streak = 0;
+  player.lastAnswer = { qid: q.id, correct: false, gained: 0, timeBonus: 0, streakBonus: 0, penalty };
+  return { ok: true, isCorrect, gained: 0, penalty, correct: q.answer, streak: player.streak };
 }
 
 function emitLeaderboard(session) {
@@ -101,7 +120,8 @@ function nextQuestion(session) {
     idx: session.questionIdx,
     total: session.questions.length
   });
-  session.timer = setTimeout(() => nextQuestion(session), q.durationMs);
+  // Safety: auto-advance when deadline hits even if no answers arrive.
+  session.timer = setTimeout(() => nextQuestion(session), q.durationMs + 50);
   return { ok: true };
 }
 

@@ -4,7 +4,7 @@ Minimal socket.io backend for live quiz / Kahoot-like flow.
 
 ## Run locally
 ```bash
-cd korean_api/socket-server
+cd socket-server
 npm install
 npm run dev
 ```
@@ -13,7 +13,7 @@ Server listens on `PORT` (default 3000).
 ## Socket events
 - `session:create` -> `{ pin, sessionId }`
 - `session:start` payload: `{ pin, questions: [{ id?, prompt, options, answer, durationMs? }] }`
-- `question:next` payload: `{ pin }` -> emits `question`
+- `question:next` payload: `{ pin }` -> emits `question` (auto-advance already on)
 - `join` payload: `{ pin, name }`
 - `answer` payload: `{ pin, answer }`
 - Broadcasts: `player:joined`, `question`, `leaderboard`, `session:end`
@@ -30,7 +30,6 @@ socket.emit("session:create", null, ({ pin }) => {
       { prompt: "안녕?", options: ["Hello", "Bye"], answer: "Hello", durationMs: 15000 }
     ]
   });
-  socket.emit("question:next", { pin });
 });
 ```
 
@@ -46,6 +45,12 @@ socket.on("question", (q) => {
 });
 ```
 
+## Scoring
+- Base 1000 points for correct answers.
+- Time bonus: up to +500 (proportional to remaining time).
+- Streak bonus: `streak * 100` (grows with consecutive correct answers).
+- Wrong answer penalty: removes accumulated streak bonus (`streak * 100`), streak resets to 0.
+
 ## Deployment (Railway)
-- Set root to `korean_api/socket-server`, `npm install`, start command `npm run start`.
+- Set root to `socket-server`, `npm install`, start command `npm run start`.
 - Use public URL in frontend: `io("https://<railway-app>.up.railway.app", { transports: ["websocket"] })`.
