@@ -3,11 +3,15 @@ import http from "http";
 import { Server } from "socket.io";
 import { v4 as uuid } from "uuid";
 
+// Runtime config
 const PORT = process.env.PORT || 3000;
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const IS_DEV = process.env.NODE_ENV === "development";
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
+  cors: { origin: CORS_ORIGIN, methods: ["GET", "POST"] }
 });
 
 // In-memory session store; restart-safe persistence is out of scope for this lightweight service.
@@ -17,6 +21,10 @@ const SESSIONS = new Map(); // pin -> session
 const BASE_SCORE = 1000;
 const TIME_BONUS_MAX = 500; // max bonus for answering immediately
 const STREAK_STEP = 100; // each consecutive correct adds this much bonus; missed answer removes it
+
+function log(...args) {
+  if (IS_DEV) console.log("[socket-server]", ...args);
+}
 
 function genPin() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -43,7 +51,7 @@ function addPlayer(session, socket, name) {
   const player = {
     id: uuid(),
     socketId: socket.id,
-    name: name.slice(0, 40),
+    name: (name || "Guest").toString().slice(0, 40),
     score: 0,
     lastAnswer: null,
     streak: 0
@@ -132,6 +140,7 @@ io.on("connection", (socket) => {
     const session = createSession(socket.id);
     socket.join(session.pin);
     cb?.({ pin: session.pin, sessionId: session.id });
+    log("session:create", session.pin);
   });
 
   socket.on("session:start", ({ pin, questions }, cb) => {
@@ -146,6 +155,7 @@ io.on("connection", (socket) => {
     }));
     session.questionIdx = -1;
     cb?.({ ok: true });
+    log("session:start", pin, "questions:", session.questions.length);
     nextQuestion(session);
   });
 
@@ -164,6 +174,7 @@ io.on("connection", (socket) => {
     io.to(pin).emit("player:joined", { id: player.id, name: player.name });
     emitLeaderboard(session);
     cb?.({ ok: true, playerId: player.id, pin });
+    log("join", { pin, player: player.name });
   });
 
   socket.on("answer", ({ pin, answer }, cb) => {
@@ -173,7 +184,15 @@ io.on("connection", (socket) => {
     if (!player) return cb?.({ ok: false, reason: "not-joined" });
     const res = scoreAnswer(session, player, { answer });
     if (!res.ok) return cb?.(res);
-    cb?.({ ok: true, correct: res.isCorrect, gained: res.gained, right: res.correct });
+    cb?.({
+      ok: true,
+      correct: res.isCorrect,
+      gained: res.gained,
+      penalty: res.penalty || 0,
+      right: res.correct,
+      streak: res.streak
+    });
+    log("answer", { pin, player: player.name, correct: res.isCorrect, gained: res.gained, penalty: res.penalty || 0 });
     emitLeaderboard(session);
   });
 
